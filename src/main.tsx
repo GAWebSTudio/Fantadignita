@@ -1,18 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trophy, Plus, Crown, User, ShieldCheck, Flame, Heart, MessageCircle, Send, X, Check, Upload, RotateCcw, Wifi, WifiOff, Lock, LogIn, UserPlus, FileText } from 'lucide-react';
+import { Trophy, Plus, Crown, User, ShieldCheck, Flame, Heart, MessageCircle, Send, X, Check, Upload, RotateCcw, Wifi, WifiOff, Lock, LogIn, UserPlus, FileText, AlertTriangle, Eye, Gavel } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import './styles.css';
 
 type Player = { id: string; nickname: string; avatarUrl?: string; createdAt: string; totalPoints: number };
 type EventDef = { id: string; title: string; points: number; category: string; legendary: boolean; description?: string | null };
 type Submission = { id: string; playerId: string; eventId: string; note?: string | null; status: 'pending' | 'approved' | 'rejected'; pointsAwarded: number; createdAt: string; approvedAt?: string | null; reactions: string[]; comments: string[] };
+type VarReview = { id: string; submissionId: string; openedBy: string | null; reason: string | null; status: 'open' | 'confirmed' | 'cancelled'; officialNote: string | null; createdAt: string; resolvedAt: string | null };
 
 type DbPlayer = { id: string; nickname: string; avatar_url: string | null; total_points: number | null; created_at: string };
 type DbEvent = { id: string; title: string; points: number; category: string; is_legendary: boolean; special_effect: string | null };
 type DbSubmission = { id: string; player_id: string; event_id: string; note: string | null; status: 'pending' | 'approved' | 'rejected'; points_awarded: number | null; created_at: string; approved_at: string | null };
 type DbReaction = { submission_id: string; emoji: string };
+type DbVarReview = { id: string; submission_id: string; opened_by: string | null; reason: string | null; status: 'open' | 'confirmed' | 'cancelled'; official_note: string | null; created_at: string; resolved_at: string | null };
 
 const PLAYER_KEY = 'fantadignita_player_id';
 const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN || '0000';
@@ -38,6 +40,19 @@ function mapSubmission(s: DbSubmission, reactions: DbReaction[] = []): Submissio
     approvedAt: s.approved_at,
     reactions: reactions.filter(r => r.submission_id === s.id).map(r => r.emoji),
     comments: []
+  };
+}
+
+function mapVarReview(v: DbVarReview): VarReview {
+  return {
+    id: v.id,
+    submissionId: v.submission_id,
+    openedBy: v.opened_by,
+    reason: v.reason,
+    status: v.status,
+    officialNote: v.official_note,
+    createdAt: v.created_at,
+    resolvedAt: v.resolved_at
   };
 }
 
@@ -76,22 +91,25 @@ function compressImage(file: File, maxSize = 512, quality = 0.78): Promise<strin
 }
 
 async function loadAll() {
-  const [playersRes, eventsRes, submissionsRes, reactionsRes] = await Promise.all([
+  const [playersRes, eventsRes, submissionsRes, reactionsRes, varRes] = await Promise.all([
     supabase.from('players').select('id,nickname,avatar_url,total_points,created_at').order('total_points', { ascending: false }),
     supabase.from('game_events').select('id,title,points,category,is_legendary,special_effect').order('category', { ascending: true }),
     supabase.from('submissions').select('id,player_id,event_id,note,status,points_awarded,created_at,approved_at').order('created_at', { ascending: false }),
-    supabase.from('feed_reactions').select('submission_id,emoji')
+    supabase.from('feed_reactions').select('submission_id,emoji'),
+    supabase.from('var_reviews').select('id,submission_id,opened_by,reason,status,official_note,created_at,resolved_at').order('created_at', { ascending: false })
   ]);
 
   if (playersRes.error) throw playersRes.error;
   if (eventsRes.error) throw eventsRes.error;
   if (submissionsRes.error) throw submissionsRes.error;
   if (reactionsRes.error) throw reactionsRes.error;
+  if (varRes.error) throw varRes.error;
 
   return {
     players: (playersRes.data || []).map(mapPlayer),
     events: (eventsRes.data || []).map(mapEvent),
-    submissions: (submissionsRes.data || []).map(s => mapSubmission(s, reactionsRes.data || []))
+    submissions: (submissionsRes.data || []).map(s => mapSubmission(s, reactionsRes.data || [])),
+    varReviews: (varRes.data || []).map(mapVarReview)
   };
 }
 
@@ -101,6 +119,7 @@ function App() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventDef[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [varReviews, setVarReviews] = useState<VarReview[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'home' | 'submit' | 'feed' | 'leaderboard' | 'rules' | 'admin' | 'profile'>('home');
@@ -111,6 +130,7 @@ function App() {
     setPlayers(data.players);
     setEvents(data.events);
     setSubmissions(data.submissions);
+    setVarReviews(data.varReviews);
     const storedId = readStoredPlayerId();
     setPlayer(storedId ? data.players.find(p => p.id === storedId) || null : null);
   };
@@ -123,6 +143,7 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, () => refresh().catch(() => undefined))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, () => refresh().catch(() => undefined))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'feed_reactions' }, () => refresh().catch(() => undefined))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'var_reviews' }, () => refresh().catch(() => undefined))
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
@@ -143,7 +164,7 @@ function App() {
       {!loading && !error && player && (
         <>
           <AnimatePresence>{!introDone && <Intro onDone={() => setIntroDone(true)} />}</AnimatePresence>
-          {introDone && <MainApp player={player} players={players} events={events} submissions={submissions} refresh={refresh} tab={tab} setTab={setTab} setPlayer={setPlayer} />}
+          {introDone && <MainApp player={player} players={players} events={events} submissions={submissions} varReviews={varReviews} refresh={refresh} tab={tab} setTab={setTab} setPlayer={setPlayer} />}
         </>
       )}
     </div>
@@ -369,8 +390,8 @@ function Onboarding({ onDone }: { onDone: (p: { nickname: string; avatarUrl: str
   </div>;
 }
 
-function MainApp(props: { player: Player; players: Player[]; events: EventDef[]; submissions: Submission[]; refresh: () => Promise<void>; tab: string; setTab: (t: any) => void; setPlayer: (p: Player|null)=>void }) {
-  const { player, players, events, submissions, refresh, tab, setTab, setPlayer } = props;
+function MainApp(props: { player: Player; players: Player[]; events: EventDef[]; submissions: Submission[]; varReviews: VarReview[]; refresh: () => Promise<void>; tab: string; setTab: (t: any) => void; setPlayer: (p: Player|null)=>void }) {
+  const { player, players, events, submissions, varReviews, refresh, tab, setTab, setPlayer } = props;
   const approved = submissions.filter(s => s.status === 'approved');
   const points = approved.filter(s => s.playerId === player.id).reduce((a, s) => a + s.pointsAwarded, 0);
   const ranking = players.map(p => ({ player: p, points: approved.filter(s => s.playerId === p.id).reduce((a, s) => a + s.pointsAwarded, 0) })).sort((a,b)=>b.points-a.points);
@@ -382,10 +403,10 @@ function MainApp(props: { player: Player; players: Player[]; events: EventDef[];
     <main className="content">
       {tab === 'home' && <Home player={player} points={points} position={position} ranking={ranking} submissions={submissions} events={events} setTab={setTab} />}
       {tab === 'submit' && <Submit player={player} events={events} refresh={refresh} />}
-      {tab === 'feed' && <Feed submissions={submissions} players={players} events={events} player={player} refresh={refresh} />}
+      {tab === 'feed' && <Feed submissions={submissions} players={players} events={events} varReviews={varReviews} player={player} refresh={refresh} />}
       {tab === 'leaderboard' && <Leaderboard ranking={ranking} />}
       {tab === 'rules' && <Rules events={events} />}
-      {tab === 'admin' && <Admin submissions={submissions} players={players} events={events} refresh={refresh} />}
+      {tab === 'admin' && <Admin submissions={submissions} players={players} events={events} varReviews={varReviews} refresh={refresh} />}
       {tab === 'profile' && <Profile player={player} points={points} submissions={submissions} reset={reset} />}
     </main>
     <nav className="bottom-nav">
@@ -439,10 +460,19 @@ function Submit({ player, events, refresh }: { player: Player; events: EventDef[
   return <section className="page"><h1>Registra prova</h1><p className="muted">Puoi selezionare una o più caselle. La Redazione approverà ogni prova singolarmente.</p><div className="selection-summary"><b>{selectedIds.length}</b><span>prove selezionate</span><em>{selectedTotal>0?'+':''}{selectedTotal} pt potenziali</em></div><div className="event-grid multi">{events.map(e=>{const selected=selectedIds.includes(e.id);return <button key={e.id} className={selected?'selected':''} onClick={()=>toggleEvent(e.id)}><span className="fake-check">{selected ? '✓' : ''}</span><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points} pt`}</b></button>;})}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" disabled={busy || selectedIds.length===0} onClick={submit}><Send size={18}/> {busy ? 'INVIO...' : selectedIds.length > 1 ? 'INVIA PROVE ALLA REDAZIONE' : 'INVIA PROVA ALLA REDAZIONE'}</button>{sent&&<p className="success">Prove inviate su Supabase. In attesa di approvazione.</p>}</section>;
 }
 
-function Feed({ submissions, players, events, player, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; player: Player; refresh: () => Promise<void> }) {
+function Feed({ submissions, players, events, varReviews, player, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; varReviews: VarReview[]; player: Player; refresh: () => Promise<void> }) {
   const list=submissions.filter(s=>s.status==='approved');
+  const openVarBySubmission = new Map(varReviews.filter(v => v.status === 'open').map(v => [v.submissionId, v]));
+  const lastVarBySubmission = new Map(varReviews.map(v => [v.submissionId, v]));
   const react=async(id:string)=>{ await supabase.from('feed_reactions').upsert({ submission_id: id, player_id: player.id, emoji: '🔥' }, { onConflict: 'submission_id,player_id,emoji' }); await refresh(); };
-  return <section className="page"><h1>Feed live</h1>{list.length===0&&<p className="muted">Nessun evento approvato.</p>}{list.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId); return <div className="feed-card" key={s.id}><img src={p?.avatarUrl || DEFAULT_AVATAR}/><div><b>{p?.nickname || 'Giocatore'}</b><p>ha completato: <strong>{e?.title || 'Prova'}</strong> <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p><small>{new Date(s.createdAt).toLocaleString('it-IT')}</small><div className="actions"><button onClick={()=>react(s.id)}><Heart size={16}/> {s.reactions.length}</button><button><MessageCircle size={16}/> {s.comments.length}</button></div></div></div>;})}</section>;
+  const requestVar=async(id:string)=>{
+    const reason = window.prompt('Motivo VAR? Es. prova dubbia, decisione contestata, comportamento antisportivo.', 'Decisione contestata');
+    if (reason === null) return;
+    const { error } = await supabase.from('var_reviews').insert({ submission_id: id, opened_by: player.id, reason: reason.trim() || 'Decisione contestata', status: 'open' });
+    if (error) return alert('VAR già aperto o errore richiesta.');
+    await refresh();
+  };
+  return <section className="page"><h1>Feed live</h1>{list.length===0&&<p className="muted">Nessun evento approvato.</p>}{list.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId); const activeVar=openVarBySubmission.get(s.id); const lastVar=lastVarBySubmission.get(s.id); return <div className={`feed-card ${activeVar ? 'var-active' : ''}`} key={s.id}><img src={p?.avatarUrl || DEFAULT_AVATAR}/><div><div className="feed-title-line"><b>{p?.nickname || 'Giocatore'}</b>{activeVar && <span className="var-badge"><AlertTriangle size={14}/> VAR IN CORSO</span>}{lastVar?.status === 'confirmed' && <span className="var-badge confirmed"><Eye size={14}/> VAR CONFERMATO</span>}{lastVar?.status === 'cancelled' && <span className="var-badge cancelled"><X size={14}/> VAR ANNULLATO</span>}</div><p>ha completato: <strong>{e?.title || 'Prova'}</strong> <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p>{activeVar && <p className="var-note">🟡 Prova sotto revisione della Redazione. Motivo: {activeVar.reason || 'contestazione'}.</p>}{lastVar?.officialNote && <p className="var-note">Nota Redazione: {lastVar.officialNote}</p>}<small>{new Date(s.createdAt).toLocaleString('it-IT')}</small><div className="actions"><button onClick={()=>react(s.id)}><Heart size={16}/> {s.reactions.length}</button><button><MessageCircle size={16}/> {s.comments.length}</button>{!activeVar && lastVar?.status !== 'cancelled' && <button className="var-button" onClick={()=>requestVar(s.id)}><AlertTriangle size={16}/> Richiedi VAR</button>}</div></div></div>;})}</section>;
 }
 
 function Leaderboard({ ranking }: any) { return <section className="page"><h1>Classifica generale</h1><div className="card">{ranking.map((r:any,i:number)=><div className="rank-row big" key={r.player.id}><span>#{i+1}</span><img src={r.player.avatarUrl}/><b>{r.player.nickname}</b><em>{r.points} pt</em></div>)}</div></section>; }
@@ -452,12 +482,13 @@ function Rules({ events }: { events: EventDef[] }){
   return <section className="page"><h1>Regolamento</h1><div className="card"><h3>Finestre valide</h3><p>Weekend: venerdì 18:00 → domenica 21:00.</p><p>Festivi e prefestivi: 18:00 → 24:00.</p><p className="gold">Ferragosto, 14 agosto: doppio punteggio.</p></div>{cats.map(c=><div className="card" key={c}><h3>{c}</h3>{events.filter(e=>e.category===c).map(e=><div className="rule-row" key={e.id}><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points}`}</b></div>)}</div>)}</section>;
 }
 
-function Admin({ submissions, players, events, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; refresh: () => Promise<void> }){
+function Admin({ submissions, players, events, varReviews, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; varReviews: VarReview[]; refresh: () => Promise<void> }){
   const [pin,setPin]=useState('');
   const [ok,setOk]=useState(false);
   const [busyId,setBusyId]=useState<string|null>(null);
   if(!ok)return <section className="page"><h1>Redazione</h1><input className="text-input" placeholder="PIN Redazione" value={pin} onChange={e=>setPin(e.target.value)} type="password"/><button className="primary" onClick={()=>setOk(pin===ADMIN_PIN)}>ENTRA</button><p className="muted">PIN configurabile con VITE_ADMIN_PIN. Default locale: 0000.</p></section>;
   const pending=submissions.filter(s=>s.status==='pending');
+  const activeVars=varReviews.filter(v=>v.status==='open');
   const upd=async(id:string,status:'approved'|'rejected')=>{
     setBusyId(id);
     const submission = submissions.find(s => s.id === id);
@@ -467,7 +498,21 @@ function Admin({ submissions, players, events, refresh }: { submissions: Submiss
     if (error) return alert('Errore aggiornamento prova.');
     await refresh();
   };
-  return <section className="page"><h1>Pannello Redazione</h1>{pending.length===0&&<p className="muted">Nessuna prova in attesa.</p>}{pending.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId);return <div className="admin-card" key={s.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} <span className="gold">{(e?.points ?? s.pointsAwarded)>0?'+':''}{e?.points ?? s.pointsAwarded}</span></p>{s.note&&<small>{s.note}</small>}</div><button className="approve" disabled={busyId===s.id} onClick={()=>upd(s.id,'approved')}><Check/></button><button className="reject" disabled={busyId===s.id} onClick={()=>upd(s.id,'rejected')}><X/></button></div>;})}</section>;
+  const resolveVar=async(review:VarReview, resolution:'confirmed'|'cancelled')=>{
+    setBusyId(review.id);
+    const note = resolution === 'confirmed' ? 'La Redazione conferma la prova.' : 'La Redazione annulla la prova dopo revisione VAR.';
+    const { error: reviewError } = await supabase.from('var_reviews').update({ status: resolution, official_note: note, resolved_at: new Date().toISOString() }).eq('id', review.id);
+    if (reviewError) { setBusyId(null); return alert('Errore chiusura VAR.'); }
+    if (resolution === 'cancelled') {
+      const { error: submissionError } = await supabase.from('submissions').update({ status: 'rejected', points_awarded: 0, approved_at: new Date().toISOString() }).eq('id', review.submissionId);
+      if (submissionError) { setBusyId(null); return alert('VAR chiuso, ma errore annullamento prova.'); }
+    }
+    setBusyId(null);
+    await refresh();
+  };
+  return <section className="page"><h1>Pannello Redazione</h1>
+    <div className="card var-admin-panel"><h3><Gavel size={18}/> VAR attivi</h3>{activeVars.length===0&&<p className="muted">Nessuna revisione VAR aperta.</p>}{activeVars.map(v=>{const s=submissions.find(x=>x.id===v.submissionId);const p=s?players.find(x=>x.id===s.playerId):null;const e=s?events.find(x=>x.id===s.eventId):null;return <div className="admin-card var-review-card" key={v.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} <span className="var-inline">VAR richiesto</span></p><small>{v.reason || 'Decisione contestata'}</small></div><button className="approve" disabled={busyId===v.id} onClick={()=>resolveVar(v,'confirmed')} title="Conferma prova"><Check/></button><button className="reject" disabled={busyId===v.id} onClick={()=>resolveVar(v,'cancelled')} title="Annulla prova"><X/></button></div>})}</div>
+    <h2>Prove in attesa</h2>{pending.length===0&&<p className="muted">Nessuna prova in attesa.</p>}{pending.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId);return <div className="admin-card" key={s.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} <span className="gold">{(e?.points ?? s.pointsAwarded)>0?'+':''}{e?.points ?? s.pointsAwarded}</span></p>{s.note&&<small>{s.note}</small>}</div><button className="approve" disabled={busyId===s.id} onClick={()=>upd(s.id,'approved')}><Check/></button><button className="reject" disabled={busyId===s.id} onClick={()=>upd(s.id,'rejected')}><X/></button></div>;})}</section>;
 }
 
 function Profile({player,points,submissions,reset}:any){return <section className="page"><h1>Profilo</h1><div className="profile-card"><img src={player.avatarUrl}/><h2>{player.nickname}</h2><p className="gold">{points} punti</p><small>{submissions.filter((s:Submission)=>s.playerId===player.id).length} prove inviate</small></div><button className="ghost" onClick={reset}><RotateCcw size={16}/> Esci da questo profilo</button></section>;}
