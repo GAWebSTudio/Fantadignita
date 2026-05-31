@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trophy, Plus, Crown, User, ShieldCheck, Flame, Heart, MessageCircle, Send, X, Check, Upload, RotateCcw, Wifi, WifiOff, Lock, LogIn, UserPlus } from 'lucide-react';
+import { Trophy, Plus, Crown, User, ShieldCheck, Flame, Heart, MessageCircle, Send, X, Check, Upload, RotateCcw, Wifi, WifiOff, Lock, LogIn, UserPlus, FileText } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import './styles.css';
 
@@ -156,6 +156,21 @@ function makeCaptcha() {
   return { label: `${a} + ${b}`, result: String(a + b) };
 }
 
+
+const SILLY_CONTRACT_TEXT = [
+  'CONTRATTO UFFICIALE DI INGRESSO NEL FANTADIGNITÀ',
+  'Io, concorrente dotato di nome utente e discutibile senso dell’onore, dichiaro di voler partecipare alla lega più inutile e solenne del pianeta.',
+  'Accetto che ogni prova inviata venga giudicata dalla Redazione con severità, ironia, sospetto e una quantità variabile di cattiveria artistica.',
+  'Accetto che i punti non rappresentino valore morale, valore economico, valore atletico o valore sociale, ma soltanto Fantadignità, che è molto peggio.',
+  'Prometto di non prendermi troppo sul serio, salvo quando sarò primo in classifica: in quel caso potrò vantarmi con moderazione insopportabile.',
+  'Dichiaro di sapere che la Redazione può approvare, rifiutare o ridere silenziosamente davanti alle mie prove.',
+  'Accetto che gli screenshot, le note e le prove testuali siano trattate come reperti goliardici e non come documenti storici dell’umanità.',
+  'Mi impegno a non piangere se una prova viene respinta, a non corrompere la Redazione con arancini freddi e a non invocare il VAR del Fantadignità.',
+  'Accetto che il tasto Skip dell’intro non sia un segno di debolezza, ma una scelta legittima per chi ha cose poco dignitose da fare.',
+  'Confermo di aver letto questo contratto stupidissimo fino in fondo, anche se il mio istinto mi suggeriva di premere subito Accetta.',
+  'Firma morale: io, utente registrato, entro ufficialmente nella lega e mi assumo la responsabilità della mia futura perdita di dignità.'
+];
+
 function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh: () => Promise<void> }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [nickname, setNickname] = useState('');
@@ -165,6 +180,9 @@ function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh:
   const [captchaValue, setCaptchaValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [contractOpen, setContractOpen] = useState(false);
+  const [contractRead, setContractRead] = useState(false);
+  const contractRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const resetCaptcha = () => {
@@ -178,24 +196,48 @@ function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh:
     try { setAvatar(await compressImage(file)); } finally { setBusy(false); }
   };
 
-  const submit = async () => {
+  const validateBase = () => {
     const cleanName = nickname.trim();
     const cleanPassword = password.trim();
     setMessage(null);
 
-    if (cleanName.length < 2) return setMessage('Inserisci un nome utente valido.');
-    if (cleanPassword.length < 4) return setMessage('La password deve avere almeno 4 caratteri.');
+    if (cleanName.length < 2) { setMessage('Inserisci un nome utente valido.'); return null; }
+    if (cleanPassword.length < 4) { setMessage('La password deve avere almeno 4 caratteri.'); return null; }
     if (captchaValue.trim() !== captcha.result) {
       resetCaptcha();
-      return setMessage('Captcha errato. Riprova.');
+      setMessage('Captcha errato. Riprova.');
+      return null;
     }
+
+    return { cleanName, cleanPassword };
+  };
+
+  const openContract = () => {
+    const valid = validateBase();
+    if (!valid) return;
+    setContractRead(false);
+    setContractOpen(true);
+    setTimeout(() => { if (contractRef.current) contractRef.current.scrollTop = 0; }, 0);
+  };
+
+  const onContractScroll = () => {
+    const el = contractRef.current;
+    if (!el) return;
+    const reachedBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+    if (reachedBottom) setContractRead(true);
+  };
+
+  const completeAuth = async () => {
+    const valid = validateBase();
+    if (!valid) return;
+    if (mode === 'register' && !contractRead) return setMessage('Devi leggere tutto il contratto prima di accettare.');
 
     setBusy(true);
     try {
       const rpcName = mode === 'register' ? 'register_player' : 'login_player';
       const payload = mode === 'register'
-        ? { player_nickname: cleanName, player_password: cleanPassword, player_avatar_url: avatar }
-        : { player_nickname: cleanName, player_password: cleanPassword };
+        ? { player_nickname: valid.cleanName, player_password: valid.cleanPassword, player_avatar_url: avatar, player_contract_version: 'contratto-stupidissimo-v1' }
+        : { player_nickname: valid.cleanName, player_password: valid.cleanPassword };
       const { data, error } = await supabase.rpc(rpcName, payload);
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
@@ -206,9 +248,16 @@ function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh:
     } catch (err: any) {
       setMessage(err?.message || 'Accesso non riuscito.');
       resetCaptcha();
+      setContractOpen(false);
+      setContractRead(false);
     } finally {
       setBusy(false);
     }
+  };
+
+  const submit = async () => {
+    if (mode === 'register') return openContract();
+    return completeAuth();
   };
 
   return <div className="screen onboarding auth-screen">
@@ -220,8 +269,8 @@ function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh:
     </div>
 
     <div className="auth-toggle">
-      <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setMessage(null); }}>Login</button>
-      <button className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setMessage(null); }}>Registrazione</button>
+      <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setMessage(null); setContractOpen(false); setContractRead(false); }}>Login</button>
+      <button className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setMessage(null); setContractOpen(false); setContractRead(false); }}>Registrazione</button>
     </div>
 
     {mode === 'register' && <>
@@ -245,7 +294,21 @@ function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh:
     </div>
 
     {message && <p className="form-error">{message}</p>}
-    <button className="primary" disabled={busy} onClick={submit}>{mode === 'login' ? <LogIn size={18}/> : <UserPlus size={18}/>} {busy ? 'CONTROLLO...' : 'ENTRA'}</button>
+    <button className="primary" disabled={busy} onClick={submit}>{mode === 'login' ? <LogIn size={18}/> : <FileText size={18}/>} {busy ? 'CONTROLLO...' : mode === 'register' ? 'LEGGI CONTRATTO' : 'ENTRA'}</button>
+
+    {contractOpen && <div className="contract-panel">
+      <div className="contract-head">
+        <div><p className="eyebrow">Passaggio obbligatorio</p><h3>Contratto stupidissimo</h3></div>
+        <button onClick={() => { setContractOpen(false); setContractRead(false); }}>×</button>
+      </div>
+      <div className="contract-scroll" ref={contractRef} onScroll={onContractScroll}>
+        {SILLY_CONTRACT_TEXT.map((line, index) => index === 0 ? <h3 key={line}>{line}</h3> : <p key={line}>{line}</p>)}
+        <p className="contract-end">Fine del documento. Ora puoi accettare senza disonorare il protocollo.</p>
+      </div>
+      {!contractRead && <p className="contract-warning">Scorri fino in fondo per sbloccare l’accettazione.</p>}
+      <button className="primary" disabled={busy || !contractRead} onClick={completeAuth}><UserPlus size={18}/> ACCETTO ED ENTRO</button>
+    </div>}
+
     <small className="muted">Il captcha è locale: serve a bloccare invii casuali, non sostituisce una protezione anti-bot professionale.</small>
   </div>;
 }
