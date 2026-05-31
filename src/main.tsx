@@ -1,49 +1,60 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trophy, Plus, Crown, ScrollText, User, ShieldCheck, Flame, Bell, Heart, MessageCircle, Send, X, Check, Camera, Upload, RotateCcw } from 'lucide-react';
+import { Trophy, Plus, Crown, User, ShieldCheck, Flame, Heart, MessageCircle, Send, X, Check, Upload, RotateCcw, Wifi, WifiOff, Lock, LogIn, UserPlus } from 'lucide-react';
+import { supabase } from './lib/supabase';
 import './styles.css';
 
-type Player = { id: string; nickname: string; avatarUrl?: string; createdAt: string };
-type EventDef = { id: string; title: string; points: number | null; category: 'Consumazioni' | 'Eventi speciali' | 'Eventi leggendari' | 'Malus'; legendary?: boolean; description?: string };
-type Submission = { id: string; playerId: string; eventId: string; note?: string; status: 'pending' | 'approved' | 'rejected'; pointsAwarded: number; createdAt: string; approvedAt?: string; reactions: string[]; comments: string[] };
+type Player = { id: string; nickname: string; avatarUrl?: string; createdAt: string; totalPoints: number };
+type EventDef = { id: string; title: string; points: number; category: string; legendary: boolean; description?: string | null };
+type Submission = { id: string; playerId: string; eventId: string; note?: string | null; status: 'pending' | 'approved' | 'rejected'; pointsAwarded: number; createdAt: string; approvedAt?: string | null; reactions: string[]; comments: string[] };
 
-const PLAYER_KEY = 'fantadignita_player';
-const SUBMISSIONS_KEY = 'fantadignita_submissions';
-const ADMIN_PIN = '0000';
+type DbPlayer = { id: string; nickname: string; avatar_url: string | null; total_points: number | null; created_at: string };
+type DbEvent = { id: string; title: string; points: number; category: string; is_legendary: boolean; special_effect: string | null };
+type DbSubmission = { id: string; player_id: string; event_id: string; note: string | null; status: 'pending' | 'approved' | 'rejected'; points_awarded: number | null; created_at: string; approved_at: string | null };
+type DbReaction = { submission_id: string; emoji: string };
 
-const events: EventDef[] = [
-  { id: 'cocktail', title: 'Cocktail', points: 5, category: 'Consumazioni' },
-  { id: 'shot', title: 'Shot', points: 2, category: 'Consumazioni' },
-  { id: 'tequila', title: 'Tequila', points: 3, category: 'Consumazioni' },
-  { id: 'calice', title: 'Calice', points: 3, category: 'Consumazioni' },
-  { id: 'birra', title: 'Birra', points: 3, category: 'Consumazioni' },
-  { id: 'ombrello', title: "Perdere l'ombrello", points: 40, category: 'Eventi speciali' },
-  { id: 'bagno', title: 'Bagno senza costume', points: 25, category: 'Eventi speciali' },
-  { id: 'banco-ketty', title: 'Salire sul banco del Ketty', points: 15, category: 'Eventi speciali' },
-  { id: 'tamponamento', title: 'Tamponamento', points: 50, category: 'Eventi speciali' },
-  { id: 'posto-blocco', title: 'Posto di blocco', points: 30, category: 'Eventi speciali' },
-  { id: 'ritiro-patente', title: 'Ritiro patente per tasso alcolemico elevato', points: null, category: 'Eventi leggendari', legendary: true, description: 'Vittoria a tavolino' },
-  { id: 'bacio-andrea', title: 'Bacio con Andrea Ketty', points: 30, category: 'Eventi speciali' },
-  { id: 'vomito-appartato', title: 'Vomito alcolico appartato', points: 15, category: 'Eventi speciali' },
-  { id: 'vomito-pubblico', title: 'Vomito alcolico in pubblico davanti a 2 o più estranei', points: 30, category: 'Eventi speciali' },
-  { id: 'caduta', title: 'Caduta alcolica', points: 10, category: 'Eventi speciali' },
-  { id: 'sonno-ketty', title: 'Addormentarsi al Ketty', points: 10, category: 'Eventi speciali' },
-  { id: 'sonno-locale', title: 'Addormentarsi al locale (no Ketty)', points: 5, category: 'Eventi speciali' },
-  { id: 'ztl', title: 'Passare dalla ZTL attiva', points: 38, category: 'Eventi speciali' },
-  { id: 'barista-ketty', title: 'Fare il barista al Ketty', points: 15, category: 'Eventi speciali' },
-  { id: 'morte', title: 'Morte', points: 5, category: 'Eventi leggendari', legendary: true, description: 'Funerale a carico dei partecipanti' },
-  { id: 'sobrio', title: 'Sobrietà del sabato sera', points: -5, category: 'Malus' }
-];
+const PLAYER_KEY = 'fantadignita_player_id';
+const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN || '0000';
+const DEFAULT_AVATAR = '/icons/logo.png';
 
-const demoPlayers: Player[] = [
-  { id: 'demo-andrea', nickname: 'Andrea Ketty', avatarUrl: '/icons/logo.png', createdAt: new Date().toISOString() },
-  { id: 'demo-redazione', nickname: 'La Redazione', avatarUrl: '/icons/logo.png', createdAt: new Date().toISOString() }
-];
+function mapPlayer(p: DbPlayer): Player {
+  return { id: p.id, nickname: p.nickname, avatarUrl: p.avatar_url || DEFAULT_AVATAR, totalPoints: p.total_points ?? 0, createdAt: p.created_at };
+}
 
-function uid() { return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`; }
-function read<T>(key: string, fallback: T): T { try { return JSON.parse(localStorage.getItem(key) || '') as T; } catch { return fallback; } }
-function write<T>(key: string, value: T) { localStorage.setItem(key, JSON.stringify(value)); }
+function mapEvent(e: DbEvent): EventDef {
+  return { id: e.id, title: e.title, points: e.points, category: labelCategory(e.category), legendary: e.is_legendary, description: e.special_effect };
+}
+
+function mapSubmission(s: DbSubmission, reactions: DbReaction[] = []): Submission {
+  return {
+    id: s.id,
+    playerId: s.player_id,
+    eventId: s.event_id,
+    note: s.note,
+    status: s.status,
+    pointsAwarded: s.points_awarded ?? 0,
+    createdAt: s.created_at,
+    approvedAt: s.approved_at,
+    reactions: reactions.filter(r => r.submission_id === s.id).map(r => r.emoji),
+    comments: []
+  };
+}
+
+function labelCategory(category: string) {
+  const normalized = category.toLowerCase();
+  if (normalized.includes('consum')) return 'Consumazioni';
+  if (normalized.includes('leggend')) return 'Eventi leggendari';
+  if (normalized.includes('malus')) return 'Malus';
+  return 'Eventi speciali';
+}
+
+function readStoredPlayerId(): string | null {
+  try { return localStorage.getItem(PLAYER_KEY); } catch { return null; }
+}
+function writeStoredPlayerId(id: string) { localStorage.setItem(PLAYER_KEY, id); }
+function clearStoredPlayerId() { localStorage.removeItem(PLAYER_KEY); }
+
 function compressImage(file: File, maxSize = 512, quality = 0.78): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -64,75 +75,216 @@ function compressImage(file: File, maxSize = 512, quality = 0.78): Promise<strin
   });
 }
 
+async function loadAll() {
+  const [playersRes, eventsRes, submissionsRes, reactionsRes] = await Promise.all([
+    supabase.from('players').select('id,nickname,avatar_url,total_points,created_at').order('total_points', { ascending: false }),
+    supabase.from('game_events').select('id,title,points,category,is_legendary,special_effect').order('category', { ascending: true }),
+    supabase.from('submissions').select('id,player_id,event_id,note,status,points_awarded,created_at,approved_at').order('created_at', { ascending: false }),
+    supabase.from('feed_reactions').select('submission_id,emoji')
+  ]);
+
+  if (playersRes.error) throw playersRes.error;
+  if (eventsRes.error) throw eventsRes.error;
+  if (submissionsRes.error) throw submissionsRes.error;
+  if (reactionsRes.error) throw reactionsRes.error;
+
+  return {
+    players: (playersRes.data || []).map(mapPlayer),
+    events: (eventsRes.data || []).map(mapEvent),
+    submissions: (submissionsRes.data || []).map(s => mapSubmission(s, reactionsRes.data || []))
+  };
+}
+
 function App() {
   const [introDone, setIntroDone] = useState(false);
-  const [player, setPlayer] = useState<Player | null>(() => read<Player | null>(PLAYER_KEY, null));
-  const [submissions, setSubmissions] = useState<Submission[]>(() => read<Submission[]>(SUBMISSIONS_KEY, []));
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [events, setEvents] = useState<EventDef[]>([]);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'home' | 'submit' | 'feed' | 'leaderboard' | 'rules' | 'admin' | 'profile'>('home');
-  const players = useMemo(() => player ? [player, ...demoPlayers] : demoPlayers, [player]);
 
-  const saveSubmissions = (next: Submission[]) => { setSubmissions(next); write(SUBMISSIONS_KEY, next); };
+  const refresh = async () => {
+    setError(null);
+    const data = await loadAll();
+    setPlayers(data.players);
+    setEvents(data.events);
+    setSubmissions(data.submissions);
+    const storedId = readStoredPlayerId();
+    setPlayer(storedId ? data.players.find(p => p.id === storedId) || null : null);
+  };
+
+  useEffect(() => {
+    refresh().catch(() => setError('Impossibile collegarsi a Supabase. Controlla variabili env e schema.sql.')).finally(() => setLoading(false));
+
+    const channel = supabase
+      .channel('fantadignita-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, () => refresh().catch(() => undefined))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, () => refresh().catch(() => undefined))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'feed_reactions' }, () => refresh().catch(() => undefined))
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  const handleAuthSuccess = async (nextPlayer: Player) => {
+    writeStoredPlayerId(nextPlayer.id);
+    setPlayer(nextPlayer);
+    setIntroDone(false);
+    await refresh();
+  };
 
   return (
     <div className="app-shell">
-      <AnimatePresence>{!introDone && <Intro onDone={() => setIntroDone(true)} />}</AnimatePresence>
-      {introDone && !player && <Onboarding onDone={(p) => { setPlayer(p); write(PLAYER_KEY, p); }} />}
-      {introDone && player && (
-        <MainApp player={player} players={players} submissions={submissions} saveSubmissions={saveSubmissions} tab={tab} setTab={setTab} setPlayer={setPlayer} />
+      {loading && <LoadingScreen />}
+      {!loading && error && <ErrorScreen message={error} retry={() => refresh().catch(() => undefined)} />}
+      {!loading && !error && !player && <AuthScreen onDone={handleAuthSuccess} refresh={refresh} />}
+      {!loading && !error && player && (
+        <>
+          <AnimatePresence>{!introDone && <Intro onDone={() => setIntroDone(true)} />}</AnimatePresence>
+          {introDone && <MainApp player={player} players={players} events={events} submissions={submissions} refresh={refresh} tab={tab} setTab={setTab} setPlayer={setPlayer} />}
+        </>
       )}
     </div>
   );
 }
 
-function Intro({ onDone }: { onDone: () => void }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [audioEnabled, setAudioEnabled] = useState(false);
+function makeCaptcha() {
+  const a = Math.floor(Math.random() * 8) + 2;
+  const b = Math.floor(Math.random() * 8) + 2;
+  return { label: `${a} + ${b}`, result: String(a + b) };
+}
 
-  const enableAudio = async () => {
-    const video = videoRef.current;
-    if (!video) return;
+function AuthScreen({ onDone, refresh }: { onDone: (p: Player) => void; refresh: () => Promise<void> }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [nickname, setNickname] = useState('');
+  const [password, setPassword] = useState('');
+  const [avatar, setAvatar] = useState<string>(DEFAULT_AVATAR);
+  const [captcha, setCaptcha] = useState(makeCaptcha);
+  const [captchaValue, setCaptchaValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-    video.muted = false;
-    video.volume = 1;
-    setAudioEnabled(true);
+  const resetCaptcha = () => {
+    setCaptcha(makeCaptcha());
+    setCaptchaValue('');
+  };
 
+  const handleFile = async (file?: File) => {
+    if (!file) return;
+    setBusy(true);
+    try { setAvatar(await compressImage(file)); } finally { setBusy(false); }
+  };
+
+  const submit = async () => {
+    const cleanName = nickname.trim();
+    const cleanPassword = password.trim();
+    setMessage(null);
+
+    if (cleanName.length < 2) return setMessage('Inserisci un nome utente valido.');
+    if (cleanPassword.length < 4) return setMessage('La password deve avere almeno 4 caratteri.');
+    if (captchaValue.trim() !== captcha.result) {
+      resetCaptcha();
+      return setMessage('Captcha errato. Riprova.');
+    }
+
+    setBusy(true);
     try {
-      await video.play();
-    } catch {
-      // Alcuni browser richiedono un secondo tap se il sistema blocca l'audio.
-      setAudioEnabled(false);
+      const rpcName = mode === 'register' ? 'register_player' : 'login_player';
+      const payload = mode === 'register'
+        ? { player_nickname: cleanName, player_password: cleanPassword, player_avatar_url: avatar }
+        : { player_nickname: cleanName, player_password: cleanPassword };
+      const { data, error } = await supabase.rpc(rpcName, payload);
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row?.id) throw new Error('Credenziali non valide.');
+      const nextPlayer = mapPlayer(row as DbPlayer);
+      await refresh();
+      await onDone(nextPlayer);
+    } catch (err: any) {
+      setMessage(err?.message || 'Accesso non riuscito.');
+      resetCaptcha();
+    } finally {
+      setBusy(false);
     }
   };
 
+  return <div className="screen onboarding auth-screen">
+    <img src={DEFAULT_AVATAR} className="onboard-logo" />
+    <div>
+      <p className="eyebrow">Accesso obbligatorio</p>
+      <h1>{mode === 'login' ? 'Entra nel Fantadignità' : 'Registrati alla lega'}</h1>
+      <p className="muted">Dopo il click su Entra partirà l’intro con audio e potrai skippare quando vuoi.</p>
+    </div>
+
+    <div className="auth-toggle">
+      <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setMessage(null); }}>Login</button>
+      <button className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setMessage(null); }}>Registrazione</button>
+    </div>
+
+    {mode === 'register' && <>
+      <button className="avatar-pick" onClick={() => inputRef.current?.click()}>
+        <img src={avatar} />
+        <span><Upload size={16}/> Carica foto profilo</span>
+      </button>
+      <input ref={inputRef} hidden type="file" accept="image/*" onChange={(e) => handleFile(e.target.files?.[0])} />
+    </>}
+
+    <label className="field-label">Nome utente</label>
+    <input className="text-input" placeholder="Es. KettyLegend" value={nickname} onChange={(e) => setNickname(e.target.value)} autoComplete="username" />
+
+    <label className="field-label">Password</label>
+    <input className="text-input" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
+
+    <div className="captcha-box">
+      <span>Captcha</span>
+      <strong>{captcha.label} = ?</strong>
+      <input className="text-input" inputMode="numeric" placeholder="Risultato" value={captchaValue} onChange={(e) => setCaptchaValue(e.target.value)} />
+    </div>
+
+    {message && <p className="form-error">{message}</p>}
+    <button className="primary" disabled={busy} onClick={submit}>{mode === 'login' ? <LogIn size={18}/> : <UserPlus size={18}/>} {busy ? 'CONTROLLO...' : 'ENTRA'}</button>
+    <small className="muted">Il captcha è locale: serve a bloccare invii casuali, non sostituisce una protezione anti-bot professionale.</small>
+  </div>;
+}
+
+function Intro({ onDone }: { onDone: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = false;
+    video.volume = 1;
+    video.currentTime = 0;
+    video.play().catch(() => {
+      // Se il browser blocca comunque l'audio, il video resta visibile e l'utente può skippare.
+    });
+  }, []);
+
   return (
     <motion.div className="intro" exit={{ opacity: 0 }} transition={{ duration: .55 }}>
-      <video
-        ref={videoRef}
-        className="intro-video"
-        autoPlay
-        muted
-        playsInline
-        preload="auto"
-        onEnded={onDone}
-      >
+      <video ref={videoRef} className="intro-video" autoPlay playsInline preload="auto" onEnded={onDone}>
         <source src="/intro/intro.mp4" type="video/mp4" />
       </video>
-
-      <div className="intro-actions">
-        {!audioEnabled && (
-          <button className="audio-button" onClick={enableAudio}>
-            ATTIVA AUDIO
-          </button>
-        )}
-        <button className="skip" onClick={onDone}>SKIP →</button>
-      </div>
+      <button className="skip skip-fixed" onClick={onDone}>SKIP →</button>
     </motion.div>
   );
 }
 
-function Onboarding({ onDone }: { onDone: (p: Player) => void }) {
+function LoadingScreen() {
+  return <div className="screen onboarding"><Wifi size={42}/><h1>Collegamento alla lega</h1><p className="muted">Caricamento dati live da Supabase...</p></div>;
+}
+
+function ErrorScreen({ message, retry }: { message: string; retry: () => void }) {
+  return <div className="screen onboarding"><WifiOff size={42}/><h1>Connessione non riuscita</h1><p className="muted">{message}</p><button className="primary" onClick={retry}>RIPROVA</button></div>;
+}
+
+function Onboarding({ onDone }: { onDone: (p: { nickname: string; avatarUrl: string }) => void }) {
   const [nickname, setNickname] = useState('');
-  const [avatar, setAvatar] = useState<string>('/icons/logo.png');
+  const [avatar, setAvatar] = useState<string>(DEFAULT_AVATAR);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const handleFile = async (file?: File) => {
@@ -141,35 +293,37 @@ function Onboarding({ onDone }: { onDone: (p: Player) => void }) {
     try { setAvatar(await compressImage(file)); } finally { setLoading(false); }
   };
   return <div className="screen onboarding">
-    <img src="/icons/logo.png" className="onboard-logo" />
+    <img src={DEFAULT_AVATAR} className="onboard-logo" />
     <h1>Entra nel Fantadignità</h1>
-    <p className="muted">Una sola lega ufficiale. Una sola Redazione. Dignità non garantita.</p>
+    <p className="muted">Profilo reale salvato su Supabase. La classifica sarà condivisa da tutti.</p>
     <button className="avatar-pick" onClick={() => inputRef.current?.click()}>
       <img src={avatar} />
       <span><Upload size={16}/> {loading ? 'Compressione...' : 'Carica foto profilo'}</span>
     </button>
     <input ref={inputRef} hidden type="file" accept="image/*" onChange={(e) => handleFile(e.target.files?.[0])} />
     <input className="text-input" placeholder="Nickname ufficiale" value={nickname} onChange={(e) => setNickname(e.target.value)} />
-    <button className="primary" disabled={nickname.trim().length < 2} onClick={() => onDone({ id: uid(), nickname: nickname.trim(), avatarUrl: avatar, createdAt: new Date().toISOString() })}>ENTRA NELLA LEGA</button>
+    <button className="primary" disabled={nickname.trim().length < 2 || loading} onClick={() => onDone({ nickname: nickname.trim(), avatarUrl: avatar })}>ENTRA NELLA LEGA</button>
   </div>;
 }
 
-function MainApp(props: { player: Player; players: Player[]; submissions: Submission[]; saveSubmissions: (s: Submission[]) => void; tab: string; setTab: (t: any) => void; setPlayer: (p: Player|null)=>void }) {
-  const { player, players, submissions, saveSubmissions, tab, setTab } = props;
+function MainApp(props: { player: Player; players: Player[]; events: EventDef[]; submissions: Submission[]; refresh: () => Promise<void>; tab: string; setTab: (t: any) => void; setPlayer: (p: Player|null)=>void }) {
+  const { player, players, events, submissions, refresh, tab, setTab, setPlayer } = props;
   const approved = submissions.filter(s => s.status === 'approved');
   const points = approved.filter(s => s.playerId === player.id).reduce((a, s) => a + s.pointsAwarded, 0);
   const ranking = players.map(p => ({ player: p, points: approved.filter(s => s.playerId === p.id).reduce((a, s) => a + s.pointsAwarded, 0) })).sort((a,b)=>b.points-a.points);
   const position = ranking.findIndex(r => r.player.id === player.id) + 1;
+  const reset = () => { clearStoredPlayerId(); setPlayer(null); };
+
   return <>
-    <header className="topbar"><img src="/icons/logo.png"/><div><strong>Fantadignità</strong><span>Lega ufficiale 2026</span></div><button onClick={()=>setTab('profile')}><User size={18}/></button></header>
+    <header className="topbar"><img src={DEFAULT_AVATAR}/><div><strong>Fantadignità</strong><span>Lega live Supabase</span></div><button onClick={()=>setTab('profile')}><User size={18}/></button></header>
     <main className="content">
-      {tab === 'home' && <Home player={player} points={points} position={position} ranking={ranking} submissions={submissions} setTab={setTab} />}
-      {tab === 'submit' && <Submit player={player} submissions={submissions} saveSubmissions={saveSubmissions} />}
-      {tab === 'feed' && <Feed submissions={submissions} players={players} saveSubmissions={saveSubmissions} />}
+      {tab === 'home' && <Home player={player} points={points} position={position} ranking={ranking} submissions={submissions} events={events} setTab={setTab} />}
+      {tab === 'submit' && <Submit player={player} events={events} refresh={refresh} />}
+      {tab === 'feed' && <Feed submissions={submissions} players={players} events={events} player={player} refresh={refresh} />}
       {tab === 'leaderboard' && <Leaderboard ranking={ranking} />}
-      {tab === 'rules' && <Rules />}
-      {tab === 'admin' && <Admin submissions={submissions} players={players} saveSubmissions={saveSubmissions} />}
-      {tab === 'profile' && <Profile player={player} points={points} submissions={submissions} reset={()=>{localStorage.clear(); location.reload();}} />}
+      {tab === 'rules' && <Rules events={events} />}
+      {tab === 'admin' && <Admin submissions={submissions} players={players} events={events} refresh={refresh} />}
+      {tab === 'profile' && <Profile player={player} points={points} submissions={submissions} reset={reset} />}
     </main>
     <nav className="bottom-nav">
       <Nav icon={<Crown/>} label="Home" active={tab==='home'} onClick={()=>setTab('home')} />
@@ -180,25 +334,79 @@ function MainApp(props: { player: Player; players: Player[]; submissions: Submis
     </nav>
   </>;
 }
-function Nav({ icon, label, active, onClick }: any) { return <button className={active?'active':''} onClick={onClick}>{React.cloneElement(icon,{size:20})}<span>{label}</span></button> }
 
-function Home({ player, points, position, ranking, submissions, setTab }: any) {
-  const last = submissions.filter((s: Submission)=>s.status==='approved').at(-1);
-  const ev = last ? events.find(e=>e.id===last.eventId) : null;
-  return <section className="page"><div className="hero-card"><div className="eyebrow">Bentornato, {player.nickname}</div><h2>{points} pt</h2><p>#{position} nella classifica generale</p><button className="primary" onClick={()=>setTab('submit')}>REGISTRA PROVA</button></div>
-  <div className="card"><h3>Ultimo scandalo approvato</h3>{ev ? <p><b>{ev.title}</b> <span className="gold">{last.pointsAwarded > 0 ? '+' : ''}{last.pointsAwarded}</span></p> : <p className="muted">La Redazione è in attesa del primo evento.</p>}</div>
-  <div className="card"><h3>Classifica live</h3>{ranking.slice(0,10).map((r:any,i:number)=><div className="rank-row" key={r.player.id}><span>#{i+1}</span><img src={r.player.avatarUrl}/><b>{r.player.nickname}</b><em>{r.points} pt</em></div>)}</div></section>
+function Nav({ icon, label, active, onClick }: any) { return <button className={active?'active':''} onClick={onClick}>{React.cloneElement(icon,{size:20})}<span>{label}</span></button>; }
+
+function Home({ player, points, position, ranking, submissions, events, setTab }: any) {
+  const last = submissions.filter((s: Submission)=>s.status==='approved')[0];
+  const ev = last ? events.find((e: EventDef)=>e.id===last.eventId) : null;
+  return <section className="page"><div className="hero-card"><div className="eyebrow">Bentornato, {player.nickname}</div><h2>{points} pt</h2><p>#{position || '-'} nella classifica generale</p><button className="primary" onClick={()=>setTab('submit')}>REGISTRA PROVA</button></div>
+  <div className="card"><h3>Ultimo scandalo approvato</h3>{ev && last ? <p><b>{ev.title}</b> <span className="gold">{last.pointsAwarded > 0 ? '+' : ''}{last.pointsAwarded}</span></p> : <p className="muted">La Redazione è in attesa del primo evento.</p>}</div>
+  <div className="card"><h3>Classifica live</h3>{ranking.slice(0,10).map((r:any,i:number)=><div className="rank-row" key={r.player.id}><span>#{i+1}</span><img src={r.player.avatarUrl}/><b>{r.player.nickname}</b><em>{r.points} pt</em></div>)}</div></section>;
 }
-function Submit({ player, submissions, saveSubmissions }: any) {
-  const [eventId,setEventId]=useState(events[0].id); const [note,setNote]=useState(''); const [sent,setSent]=useState(false);
-  const ev=events.find(e=>e.id===eventId)!;
-  const submit=()=>{ const s:Submission={id:uid(),playerId:player.id,eventId,note,status:'pending',pointsAwarded:ev.points??9999,createdAt:new Date().toISOString(),reactions:[],comments:[]}; saveSubmissions([s,...submissions]); setSent(true); setNote(''); };
-  return <section className="page"><h1>Registra prova</h1><p className="muted">Ci fidiamo. Ma decide sempre la Redazione.</p><div className="event-grid">{events.map(e=><button key={e.id} className={eventId===e.id?'selected':''} onClick={()=>setEventId(e.id)}><span>{e.title}</span><b>{e.points===null?e.description:`${e.points>0?'+':''}${e.points} pt`}</b></button>)}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" onClick={submit}><Send size={18}/> INVIA ALLA REDAZIONE</button>{sent&&<p className="success">Prova inviata. In attesa di approvazione.</p>}</section>
+
+function Submit({ player, events, refresh }: { player: Player; events: EventDef[]; refresh: () => Promise<void> }) {
+  const [selectedIds, setSelectedIds] = useState<string[]>(events[0]?.id ? [events[0].id] : []);
+  const [note,setNote]=useState('');
+  const [sent,setSent]=useState(false);
+  const [busy,setBusy]=useState(false);
+
+  useEffect(() => {
+    if (selectedIds.length === 0 && events[0]?.id) setSelectedIds([events[0].id]);
+  }, [events, selectedIds.length]);
+
+  const toggleEvent = (id: string) => {
+    setSelectedIds(current => current.includes(id) ? current.filter(x => x !== id) : [...current, id]);
+    setSent(false);
+  };
+
+  const submit=async()=>{
+    if (selectedIds.length === 0 || busy) return;
+    setBusy(true);
+    const selectedEvents = events.filter(e => selectedIds.includes(e.id));
+    const rows = selectedEvents.map(e => ({ player_id: player.id, event_id: e.id, note: note.trim() || null, points_awarded: e.points, status: 'pending' }));
+    const { error } = await supabase.from('submissions').insert(rows);
+    setBusy(false);
+    if (error) return alert('Errore invio prova. Controlla Supabase/RLS.');
+    setSent(true); setNote(''); setSelectedIds([]); await refresh();
+  };
+
+  if (events.length === 0) return <section className="page"><h1>Registra prova</h1><p className="muted">Nessuna prova trovata. Esegui prima lo schema SQL su Supabase.</p></section>;
+  const selectedTotal = events.filter(e => selectedIds.includes(e.id)).reduce((sum, e) => sum + e.points, 0);
+  return <section className="page"><h1>Registra prova</h1><p className="muted">Puoi selezionare una o più caselle. La Redazione approverà ogni prova singolarmente.</p><div className="selection-summary"><b>{selectedIds.length}</b><span>prove selezionate</span><em>{selectedTotal>0?'+':''}{selectedTotal} pt potenziali</em></div><div className="event-grid multi">{events.map(e=>{const selected=selectedIds.includes(e.id);return <button key={e.id} className={selected?'selected':''} onClick={()=>toggleEvent(e.id)}><span className="fake-check">{selected ? '✓' : ''}</span><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points} pt`}</b></button>;})}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" disabled={busy || selectedIds.length===0} onClick={submit}><Send size={18}/> {busy ? 'INVIO...' : selectedIds.length > 1 ? 'INVIA PROVE ALLA REDAZIONE' : 'INVIA PROVA ALLA REDAZIONE'}</button>{sent&&<p className="success">Prove inviate su Supabase. In attesa di approvazione.</p>}</section>;
 }
-function Feed({ submissions, players, saveSubmissions }: any) { const list=submissions.filter((s:Submission)=>s.status==='approved'); return <section className="page"><h1>Feed live</h1>{list.length===0&&<p className="muted">Nessun evento approvato.</p>}{list.map((s:Submission)=>{const p=players.find((x:Player)=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId); return <div className="feed-card" key={s.id}><img src={p?.avatarUrl}/><div><b>{p?.nickname}</b><p>ha completato: <strong>{e?.title}</strong> <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p><small>{new Date(s.createdAt).toLocaleString('it-IT')}</small><div className="actions"><button onClick={()=>saveSubmissions(submissions.map((x:Submission)=>x.id===s.id?{...x,reactions:[...x.reactions,'🔥']}:x))}><Heart size={16}/> {s.reactions.length}</button><button><MessageCircle size={16}/> {s.comments.length}</button></div></div></div>})}</section> }
-function Leaderboard({ ranking }: any) { return <section className="page"><h1>Classifica generale</h1><div className="card">{ranking.map((r:any,i:number)=><div className="rank-row big" key={r.player.id}><span>#{i+1}</span><img src={r.player.avatarUrl}/><b>{r.player.nickname}</b><em>{r.points} pt</em></div>)}</div></section> }
-function Rules(){ const cats=[...new Set(events.map(e=>e.category))]; return <section className="page"><h1>Regolamento</h1><div className="card"><h3>Finestre valide</h3><p>Weekend: venerdì 18:00 → domenica 21:00.</p><p>Festivi e prefestivi: 18:00 → 24:00.</p><p className="gold">Ferragosto, 14 agosto: doppio punteggio.</p></div>{cats.map(c=><div className="card" key={c}><h3>{c}</h3>{events.filter(e=>e.category===c).map(e=><div className="rule-row" key={e.id}><span>{e.title}</span><b>{e.points===null?e.description:`${e.points>0?'+':''}${e.points}`}</b></div>)}</div>)}</section> }
-function Admin({ submissions, players, saveSubmissions }: any){ const [pin,setPin]=useState(''); const [ok,setOk]=useState(false); if(!ok)return <section className="page"><h1>Redazione</h1><input className="text-input" placeholder="PIN Redazione" value={pin} onChange={e=>setPin(e.target.value)} type="password"/><button className="primary" onClick={()=>setOk(pin===ADMIN_PIN)}>ENTRA</button><p className="muted">PIN demo: 0000. Da cambiare quando colleghiamo Supabase.</p></section>; const pending=submissions.filter((s:Submission)=>s.status==='pending'); const upd=(id:string,status:'approved'|'rejected')=>saveSubmissions(submissions.map((s:Submission)=>s.id===id?{...s,status,approvedAt:new Date().toISOString()}:s)); return <section className="page"><h1>Pannello Redazione</h1>{pending.length===0&&<p className="muted">Nessuna prova in attesa.</p>}{pending.map((s:Submission)=>{const p=players.find((x:Player)=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId);return <div className="admin-card" key={s.id}><div><b>{p?.nickname}</b><p>{e?.title} <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p>{s.note&&<small>{s.note}</small>}</div><button className="approve" onClick={()=>upd(s.id,'approved')}><Check/></button><button className="reject" onClick={()=>upd(s.id,'rejected')}><X/></button></div>})}</section> }
-function Profile({player,points,submissions,reset}:any){return <section className="page"><h1>Profilo</h1><div className="profile-card"><img src={player.avatarUrl}/><h2>{player.nickname}</h2><p className="gold">{points} punti</p><small>{submissions.filter((s:Submission)=>s.playerId===player.id).length} prove inviate</small></div><button className="ghost" onClick={reset}><RotateCcw size={16}/> Reset demo locale</button></section>}
+
+function Feed({ submissions, players, events, player, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; player: Player; refresh: () => Promise<void> }) {
+  const list=submissions.filter(s=>s.status==='approved');
+  const react=async(id:string)=>{ await supabase.from('feed_reactions').upsert({ submission_id: id, player_id: player.id, emoji: '🔥' }, { onConflict: 'submission_id,player_id,emoji' }); await refresh(); };
+  return <section className="page"><h1>Feed live</h1>{list.length===0&&<p className="muted">Nessun evento approvato.</p>}{list.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId); return <div className="feed-card" key={s.id}><img src={p?.avatarUrl || DEFAULT_AVATAR}/><div><b>{p?.nickname || 'Giocatore'}</b><p>ha completato: <strong>{e?.title || 'Prova'}</strong> <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p><small>{new Date(s.createdAt).toLocaleString('it-IT')}</small><div className="actions"><button onClick={()=>react(s.id)}><Heart size={16}/> {s.reactions.length}</button><button><MessageCircle size={16}/> {s.comments.length}</button></div></div></div>;})}</section>;
+}
+
+function Leaderboard({ ranking }: any) { return <section className="page"><h1>Classifica generale</h1><div className="card">{ranking.map((r:any,i:number)=><div className="rank-row big" key={r.player.id}><span>#{i+1}</span><img src={r.player.avatarUrl}/><b>{r.player.nickname}</b><em>{r.points} pt</em></div>)}</div></section>; }
+
+function Rules({ events }: { events: EventDef[] }){
+  const cats=[...new Set(events.map(e=>e.category))];
+  return <section className="page"><h1>Regolamento</h1><div className="card"><h3>Finestre valide</h3><p>Weekend: venerdì 18:00 → domenica 21:00.</p><p>Festivi e prefestivi: 18:00 → 24:00.</p><p className="gold">Ferragosto, 14 agosto: doppio punteggio.</p></div>{cats.map(c=><div className="card" key={c}><h3>{c}</h3>{events.filter(e=>e.category===c).map(e=><div className="rule-row" key={e.id}><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points}`}</b></div>)}</div>)}</section>;
+}
+
+function Admin({ submissions, players, events, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; refresh: () => Promise<void> }){
+  const [pin,setPin]=useState('');
+  const [ok,setOk]=useState(false);
+  const [busyId,setBusyId]=useState<string|null>(null);
+  if(!ok)return <section className="page"><h1>Redazione</h1><input className="text-input" placeholder="PIN Redazione" value={pin} onChange={e=>setPin(e.target.value)} type="password"/><button className="primary" onClick={()=>setOk(pin===ADMIN_PIN)}>ENTRA</button><p className="muted">PIN configurabile con VITE_ADMIN_PIN. Default locale: 0000.</p></section>;
+  const pending=submissions.filter(s=>s.status==='pending');
+  const upd=async(id:string,status:'approved'|'rejected')=>{
+    setBusyId(id);
+    const submission = submissions.find(s => s.id === id);
+    const event = submission ? events.find(e => e.id === submission.eventId) : null;
+    const { error } = await supabase.from('submissions').update({ status, approved_at: new Date().toISOString(), points_awarded: status === 'approved' ? (event?.points ?? submission?.pointsAwarded ?? 0) : 0 }).eq('id', id);
+    setBusyId(null);
+    if (error) return alert('Errore aggiornamento prova.');
+    await refresh();
+  };
+  return <section className="page"><h1>Pannello Redazione</h1>{pending.length===0&&<p className="muted">Nessuna prova in attesa.</p>}{pending.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId);return <div className="admin-card" key={s.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} <span className="gold">{(e?.points ?? s.pointsAwarded)>0?'+':''}{e?.points ?? s.pointsAwarded}</span></p>{s.note&&<small>{s.note}</small>}</div><button className="approve" disabled={busyId===s.id} onClick={()=>upd(s.id,'approved')}><Check/></button><button className="reject" disabled={busyId===s.id} onClick={()=>upd(s.id,'rejected')}><X/></button></div>;})}</section>;
+}
+
+function Profile({player,points,submissions,reset}:any){return <section className="page"><h1>Profilo</h1><div className="profile-card"><img src={player.avatarUrl}/><h2>{player.nickname}</h2><p className="gold">{points} punti</p><small>{submissions.filter((s:Submission)=>s.playerId===player.id).length} prove inviate</small></div><button className="ghost" onClick={reset}><RotateCcw size={16}/> Esci da questo profilo</button></section>;}
 
 createRoot(document.getElementById('root')!).render(<App />);
