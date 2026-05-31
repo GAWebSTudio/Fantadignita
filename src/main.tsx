@@ -7,12 +7,12 @@ import './styles.css';
 
 type Player = { id: string; nickname: string; avatarUrl?: string; createdAt: string; totalPoints: number };
 type EventDef = { id: string; title: string; points: number; category: string; legendary: boolean; description?: string | null };
-type Submission = { id: string; playerId: string; eventId: string; note?: string | null; status: 'pending' | 'approved' | 'rejected'; pointsAwarded: number; createdAt: string; approvedAt?: string | null; reactions: string[]; comments: string[] };
+type Submission = { id: string; playerId: string; eventId: string; quantity: number; note?: string | null; status: 'pending' | 'approved' | 'rejected'; pointsAwarded: number; createdAt: string; approvedAt?: string | null; reactions: string[]; comments: string[] };
 type VarReview = { id: string; submissionId: string; openedBy: string | null; reason: string | null; status: 'open' | 'confirmed' | 'cancelled'; officialNote: string | null; createdAt: string; resolvedAt: string | null };
 
 type DbPlayer = { id: string; nickname: string; avatar_url: string | null; total_points: number | null; created_at: string };
 type DbEvent = { id: string; title: string; points: number; category: string; is_legendary: boolean; special_effect: string | null };
-type DbSubmission = { id: string; player_id: string; event_id: string; note: string | null; status: 'pending' | 'approved' | 'rejected'; points_awarded: number | null; created_at: string; approved_at: string | null };
+type DbSubmission = { id: string; player_id: string; event_id: string; quantity: number | null; note: string | null; status: 'pending' | 'approved' | 'rejected'; points_awarded: number | null; created_at: string; approved_at: string | null };
 type DbReaction = { submission_id: string; emoji: string };
 type DbVarReview = { id: string; submission_id: string; opened_by: string | null; reason: string | null; status: 'open' | 'confirmed' | 'cancelled'; official_note: string | null; created_at: string; resolved_at: string | null };
 
@@ -33,6 +33,7 @@ function mapSubmission(s: DbSubmission, reactions: DbReaction[] = []): Submissio
     id: s.id,
     playerId: s.player_id,
     eventId: s.event_id,
+    quantity: s.quantity ?? 1,
     note: s.note,
     status: s.status,
     pointsAwarded: s.points_awarded ?? 0,
@@ -94,7 +95,7 @@ async function loadAll() {
   const [playersRes, eventsRes, submissionsRes, reactionsRes, varRes] = await Promise.all([
     supabase.from('players').select('id,nickname,avatar_url,total_points,created_at').order('total_points', { ascending: false }),
     supabase.from('game_events').select('id,title,points,category,is_legendary,special_effect').order('category', { ascending: true }),
-    supabase.from('submissions').select('id,player_id,event_id,note,status,points_awarded,created_at,approved_at').order('created_at', { ascending: false }),
+    supabase.from('submissions').select('id,player_id,event_id,quantity,note,status,points_awarded,created_at,approved_at').order('created_at', { ascending: false }),
     supabase.from('feed_reactions').select('submission_id,emoji'),
     supabase.from('var_reviews').select('id,submission_id,opened_by,reason,status,official_note,created_at,resolved_at').order('created_at', { ascending: false })
   ]);
@@ -430,34 +431,54 @@ function Home({ player, points, position, ranking, submissions, events, setTab }
 }
 
 function Submit({ player, events, refresh }: { player: Player; events: EventDef[]; refresh: () => Promise<void> }) {
-  const [selectedIds, setSelectedIds] = useState<string[]>(events[0]?.id ? [events[0].id] : []);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [note,setNote]=useState('');
   const [sent,setSent]=useState(false);
   const [busy,setBusy]=useState(false);
 
-  useEffect(() => {
-    if (selectedIds.length === 0 && events[0]?.id) setSelectedIds([events[0].id]);
-  }, [events, selectedIds.length]);
-
   const toggleEvent = (id: string) => {
-    setSelectedIds(current => current.includes(id) ? current.filter(x => x !== id) : [...current, id]);
+    setSelectedIds(current => {
+      const alreadySelected = current.includes(id);
+      if (alreadySelected) return current.filter(x => x !== id);
+      setQuantities(q => ({ ...q, [id]: q[id] || 1 }));
+      return [...current, id];
+    });
     setSent(false);
   };
+
+  const setQuantity = (id: string, value: string) => {
+    const parsed = Math.max(1, Math.min(999, Number.parseInt(value || '1', 10) || 1));
+    setQuantities(current => ({ ...current, [id]: parsed }));
+    setSent(false);
+  };
+
+  const getQuantity = (id: string) => quantities[id] || 1;
 
   const submit=async()=>{
     if (selectedIds.length === 0 || busy) return;
     setBusy(true);
     const selectedEvents = events.filter(e => selectedIds.includes(e.id));
-    const rows = selectedEvents.map(e => ({ player_id: player.id, event_id: e.id, note: note.trim() || null, points_awarded: e.points, status: 'pending' }));
+    const rows = selectedEvents.map(e => {
+      const quantity = getQuantity(e.id);
+      return {
+        player_id: player.id,
+        event_id: e.id,
+        quantity,
+        note: note.trim() || null,
+        points_awarded: e.points * quantity,
+        status: 'pending'
+      };
+    });
     const { error } = await supabase.from('submissions').insert(rows);
     setBusy(false);
-    if (error) return alert('Errore invio prova. Controlla Supabase/RLS.');
-    setSent(true); setNote(''); setSelectedIds([]); await refresh();
+    if (error) return alert('Errore invio prova. Controlla Supabase/RLS e il nuovo schema.sql.');
+    setSent(true); setNote(''); setSelectedIds([]); setQuantities({}); await refresh();
   };
 
   if (events.length === 0) return <section className="page"><h1>Registra prova</h1><p className="muted">Nessuna prova trovata. Esegui prima lo schema SQL su Supabase.</p></section>;
-  const selectedTotal = events.filter(e => selectedIds.includes(e.id)).reduce((sum, e) => sum + e.points, 0);
-  return <section className="page"><h1>Registra prova</h1><p className="muted">Puoi selezionare una o più caselle. La Redazione approverà ogni prova singolarmente.</p><div className="selection-summary"><b>{selectedIds.length}</b><span>prove selezionate</span><em>{selectedTotal>0?'+':''}{selectedTotal} pt potenziali</em></div><div className="event-grid multi">{events.map(e=>{const selected=selectedIds.includes(e.id);return <button key={e.id} className={selected?'selected':''} onClick={()=>toggleEvent(e.id)}><span className="fake-check">{selected ? '✓' : ''}</span><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points} pt`}</b></button>;})}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" disabled={busy || selectedIds.length===0} onClick={submit}><Send size={18}/> {busy ? 'INVIO...' : selectedIds.length > 1 ? 'INVIA PROVE ALLA REDAZIONE' : 'INVIA PROVA ALLA REDAZIONE'}</button>{sent&&<p className="success">Prove inviate su Supabase. In attesa di approvazione.</p>}</section>;
+  const selectedTotal = events.filter(e => selectedIds.includes(e.id)).reduce((sum, e) => sum + (e.points * getQuantity(e.id)), 0);
+  return <section className="page"><h1>Registra prova</h1><p className="muted">Puoi selezionare più prove e indicare una quantità per ciascuna. I punti vengono calcolati automaticamente.</p><div className="selection-summary"><b>{selectedIds.length}</b><span>prove selezionate</span><em>{selectedTotal>0?'+':''}{selectedTotal} pt potenziali</em></div><div className="event-grid multi quantity-mode">{events.map(e=>{const selected=selectedIds.includes(e.id); const quantity=getQuantity(e.id); const total=e.points*quantity; return <div key={e.id} className={`event-choice ${selected?'selected':''}`}><button type="button" onClick={()=>toggleEvent(e.id)}><span className="fake-check">{selected ? '✓' : ''}</span><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points} pt`}</b></button>{selected && <div className="quantity-row"><label>Quantità</label><input className="quantity-input" type="number" min="1" max="999" inputMode="numeric" value={quantity} onChange={ev=>setQuantity(e.id, ev.target.value)} onClick={ev=>ev.stopPropagation()} /><span className="quantity-total">Totale: {total>0?'+':''}{total} pt</span></div>}</div>;})}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" disabled={busy || selectedIds.length===0} onClick={submit}><Send size={18}/> {busy ? 'INVIO...' : selectedIds.length > 1 ? 'INVIA PROVE ALLA REDAZIONE' : 'INVIA PROVA ALLA REDAZIONE'}</button>{sent&&<p className="success">Prove inviate su Supabase con quantità. In attesa di approvazione.</p>}</section>;
 }
 
 function Feed({ submissions, players, events, varReviews, player, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; varReviews: VarReview[]; player: Player; refresh: () => Promise<void> }) {
@@ -472,7 +493,7 @@ function Feed({ submissions, players, events, varReviews, player, refresh }: { s
     if (error) return alert('VAR già aperto o errore richiesta.');
     await refresh();
   };
-  return <section className="page"><h1>Feed live</h1>{list.length===0&&<p className="muted">Nessun evento approvato.</p>}{list.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId); const activeVar=openVarBySubmission.get(s.id); const lastVar=lastVarBySubmission.get(s.id); return <div className={`feed-card ${activeVar ? 'var-active' : ''}`} key={s.id}><img src={p?.avatarUrl || DEFAULT_AVATAR}/><div><div className="feed-title-line"><b>{p?.nickname || 'Giocatore'}</b>{activeVar && <span className="var-badge"><AlertTriangle size={14}/> VAR IN CORSO</span>}{lastVar?.status === 'confirmed' && <span className="var-badge confirmed"><Eye size={14}/> VAR CONFERMATO</span>}{lastVar?.status === 'cancelled' && <span className="var-badge cancelled"><X size={14}/> VAR ANNULLATO</span>}</div><p>ha completato: <strong>{e?.title || 'Prova'}</strong> <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p>{activeVar && <p className="var-note">🟡 Prova sotto revisione della Redazione. Motivo: {activeVar.reason || 'contestazione'}.</p>}{lastVar?.officialNote && <p className="var-note">Nota Redazione: {lastVar.officialNote}</p>}<small>{new Date(s.createdAt).toLocaleString('it-IT')}</small><div className="actions"><button onClick={()=>react(s.id)}><Heart size={16}/> {s.reactions.length}</button><button><MessageCircle size={16}/> {s.comments.length}</button>{!activeVar && lastVar?.status !== 'cancelled' && <button className="var-button" onClick={()=>requestVar(s.id)}><AlertTriangle size={16}/> Richiedi VAR</button>}</div></div></div>;})}</section>;
+  return <section className="page"><h1>Feed live</h1>{list.length===0&&<p className="muted">Nessun evento approvato.</p>}{list.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId); const activeVar=openVarBySubmission.get(s.id); const lastVar=lastVarBySubmission.get(s.id); return <div className={`feed-card ${activeVar ? 'var-active' : ''}`} key={s.id}><img src={p?.avatarUrl || DEFAULT_AVATAR}/><div><div className="feed-title-line"><b>{p?.nickname || 'Giocatore'}</b>{activeVar && <span className="var-badge"><AlertTriangle size={14}/> VAR IN CORSO</span>}{lastVar?.status === 'confirmed' && <span className="var-badge confirmed"><Eye size={14}/> VAR CONFERMATO</span>}{lastVar?.status === 'cancelled' && <span className="var-badge cancelled"><X size={14}/> VAR ANNULLATO</span>}</div><p>ha completato: <strong>{e?.title || 'Prova'}</strong> {s.quantity > 1 && <span className="quantity-pill">x{s.quantity}</span>} <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p>{activeVar && <p className="var-note">🟡 Prova sotto revisione della Redazione. Motivo: {activeVar.reason || 'contestazione'}.</p>}{lastVar?.officialNote && <p className="var-note">Nota Redazione: {lastVar.officialNote}</p>}<small>{new Date(s.createdAt).toLocaleString('it-IT')}</small><div className="actions"><button onClick={()=>react(s.id)}><Heart size={16}/> {s.reactions.length}</button><button><MessageCircle size={16}/> {s.comments.length}</button>{!activeVar && lastVar?.status !== 'cancelled' && <button className="var-button" onClick={()=>requestVar(s.id)}><AlertTriangle size={16}/> Richiedi VAR</button>}</div></div></div>;})}</section>;
 }
 
 function Leaderboard({ ranking }: any) { return <section className="page"><h1>Classifica generale</h1><div className="card">{ranking.map((r:any,i:number)=><div className="rank-row big" key={r.player.id}><span>#{i+1}</span><img src={r.player.avatarUrl}/><b>{r.player.nickname}</b><em>{r.points} pt</em></div>)}</div></section>; }
@@ -493,7 +514,7 @@ function Admin({ submissions, players, events, varReviews, refresh }: { submissi
     setBusyId(id);
     const submission = submissions.find(s => s.id === id);
     const event = submission ? events.find(e => e.id === submission.eventId) : null;
-    const { error } = await supabase.from('submissions').update({ status, approved_at: new Date().toISOString(), points_awarded: status === 'approved' ? (event?.points ?? submission?.pointsAwarded ?? 0) : 0 }).eq('id', id);
+    const { error } = await supabase.from('submissions').update({ status, approved_at: new Date().toISOString(), points_awarded: status === 'approved' ? (submission?.pointsAwarded ?? ((event?.points ?? 0) * (submission?.quantity ?? 1))) : 0 }).eq('id', id);
     setBusyId(null);
     if (error) return alert('Errore aggiornamento prova.');
     await refresh();
@@ -512,7 +533,7 @@ function Admin({ submissions, players, events, varReviews, refresh }: { submissi
   };
   return <section className="page"><h1>Pannello Redazione</h1>
     <div className="card var-admin-panel"><h3><Gavel size={18}/> VAR attivi</h3>{activeVars.length===0&&<p className="muted">Nessuna revisione VAR aperta.</p>}{activeVars.map(v=>{const s=submissions.find(x=>x.id===v.submissionId);const p=s?players.find(x=>x.id===s.playerId):null;const e=s?events.find(x=>x.id===s.eventId):null;return <div className="admin-card var-review-card" key={v.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} <span className="var-inline">VAR richiesto</span></p><small>{v.reason || 'Decisione contestata'}</small></div><button className="approve" disabled={busyId===v.id} onClick={()=>resolveVar(v,'confirmed')} title="Conferma prova"><Check/></button><button className="reject" disabled={busyId===v.id} onClick={()=>resolveVar(v,'cancelled')} title="Annulla prova"><X/></button></div>})}</div>
-    <h2>Prove in attesa</h2>{pending.length===0&&<p className="muted">Nessuna prova in attesa.</p>}{pending.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId);return <div className="admin-card" key={s.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} <span className="gold">{(e?.points ?? s.pointsAwarded)>0?'+':''}{e?.points ?? s.pointsAwarded}</span></p>{s.note&&<small>{s.note}</small>}</div><button className="approve" disabled={busyId===s.id} onClick={()=>upd(s.id,'approved')}><Check/></button><button className="reject" disabled={busyId===s.id} onClick={()=>upd(s.id,'rejected')}><X/></button></div>;})}</section>;
+    <h2>Prove in attesa</h2>{pending.length===0&&<p className="muted">Nessuna prova in attesa.</p>}{pending.map(s=>{const p=players.find(x=>x.id===s.playerId);const e=events.find(x=>x.id===s.eventId);return <div className="admin-card" key={s.id}><div><b>{p?.nickname || 'Giocatore'}</b><p>{e?.title || 'Prova'} {s.quantity > 1 && <span className="quantity-pill">x{s.quantity}</span>} <span className="gold">{s.pointsAwarded>0?'+':''}{s.pointsAwarded}</span></p>{s.note&&<small>{s.note}</small>}</div><button className="approve" disabled={busyId===s.id} onClick={()=>upd(s.id,'approved')}><Check/></button><button className="reject" disabled={busyId===s.id} onClick={()=>upd(s.id,'rejected')}><X/></button></div>;})}</section>;
 }
 
 function Profile({player,points,submissions,reset}:any){return <section className="page"><h1>Profilo</h1><div className="profile-card"><img src={player.avatarUrl}/><h2>{player.nickname}</h2><p className="gold">{points} punti</p><small>{submissions.filter((s:Submission)=>s.playerId===player.id).length} prove inviate</small></div><button className="ghost" onClick={reset}><RotateCcw size={16}/> Esci da questo profilo</button></section>;}
