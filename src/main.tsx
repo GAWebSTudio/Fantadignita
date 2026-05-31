@@ -435,7 +435,7 @@ function Home({ player, points, position, ranking, submissions, events, setTab }
 
 function Submit({ player, players, events, refresh }: { player: Player; players: Player[]; events: EventDef[]; refresh: () => Promise<void> }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [assignedToId, setAssignedToId] = useState(player.id);
   const [note,setNote]=useState('');
   const [sent,setSent]=useState(false);
@@ -448,19 +448,26 @@ function Submit({ player, players, events, refresh }: { player: Player; players:
     setSelectedIds(current => {
       const alreadySelected = current.includes(id);
       if (alreadySelected) return current.filter(x => x !== id);
-      setQuantities(q => ({ ...q, [id]: q[id] || 1 }));
+      setQuantities(q => ({ ...q, [id]: q[id] ?? '1' }));
       return [...current, id];
     });
     setSent(false);
   };
 
   const setQuantity = (id: string, value: string) => {
-    const parsed = Math.max(1, Math.min(999, Number.parseInt(value || '1', 10) || 1));
-    setQuantities(current => ({ ...current, [id]: parsed }));
+    // Permette di cancellare temporaneamente l'1 mentre l'utente sta scrivendo.
+    // Il valore viene normalizzato solo al momento del calcolo/salvataggio.
+    const clean = value.replace(/[^0-9]/g, '').slice(0, 3);
+    setQuantities(current => ({ ...current, [id]: clean }));
     setSent(false);
   };
 
-  const getQuantity = (id: string) => quantities[id] || 1;
+  const getQuantity = (id: string) => {
+    const parsed = Number.parseInt(quantities[id] || '1', 10);
+    return Math.max(1, Math.min(999, Number.isFinite(parsed) ? parsed : 1));
+  };
+
+  const getQuantityInputValue = (id: string) => quantities[id] ?? '1';
 
   const submit=async()=>{
     if (selectedIds.length === 0 || busy) return;
@@ -487,7 +494,7 @@ function Submit({ player, players, events, refresh }: { player: Player; players:
 
   if (events.length === 0) return <section className="page"><h1>Registra prova</h1><p className="muted">Nessuna prova trovata. Esegui prima lo schema SQL su Supabase.</p></section>;
   const selectedTotal = events.filter(e => selectedIds.includes(e.id)).reduce((sum, e) => sum + (e.points * getQuantity(e.id)), 0);
-  return <section className="page"><h1>Registra prova</h1><p className="muted">Puoi selezionare più prove, indicare quantità e accollarle anche a un altro utente. La Redazione deciderà se approvarle.</p><div className="selection-summary"><b>{selectedIds.length}</b><span>{isAccollo ? `Accollo a ${targetPlayer.nickname}` : 'Prove per te'}</span><em>{selectedTotal>0?'+':''}{selectedTotal} pt potenziali</em></div><div className="assign-box"><label className="field-label">A chi vuoi accollare la prova?</label><select className="text-input" value={assignedToId} onChange={e=>{setAssignedToId(e.target.value); setSent(false);}}><option value={player.id}>Me stesso — {player.nickname}</option>{players.filter(p=>p.id!==player.id).map(p=><option key={p.id} value={p.id}>{p.nickname}</option>)}</select>{isAccollo && <p className="accollo-warning">🔥 Stai accollando questa prova a <b>{targetPlayer.nickname}</b>. I punti andranno a lui/lei dopo approvazione.</p>}</div><div className="event-grid multi quantity-mode">{events.map(e=>{const selected=selectedIds.includes(e.id); const quantity=getQuantity(e.id); const total=e.points*quantity; return <div key={e.id} className={`event-choice ${selected?'selected':''}`}><button type="button" onClick={()=>toggleEvent(e.id)}><span className="fake-check">{selected ? '✓' : ''}</span><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points} pt`}</b></button>{selected && <div className="quantity-row"><label>Quantità</label><input className="quantity-input" type="number" min="1" max="999" inputMode="numeric" value={quantity} onChange={ev=>setQuantity(e.id, ev.target.value)} onClick={ev=>ev.stopPropagation()} /><span className="quantity-total">Totale: {total>0?'+':''}{total} pt</span></div>}</div>;})}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" disabled={busy || selectedIds.length===0} onClick={submit}><Send size={18}/> {busy ? 'INVIO...' : isAccollo ? 'INVIA ACCOLLO ALLA REDAZIONE' : selectedIds.length > 1 ? 'INVIA PROVE ALLA REDAZIONE' : 'INVIA PROVA ALLA REDAZIONE'}</button>{sent&&<p className="success">{isAccollo ? 'Accollo inviato' : 'Prove inviate'} su Supabase. In attesa di approvazione.</p>}</section>;
+  return <section className="page"><h1>Registra prova</h1><p className="muted">Puoi selezionare più prove, indicare quantità e accollarle anche a un altro utente. La Redazione deciderà se approvarle.</p><div className="selection-summary"><b>{selectedIds.length}</b><span>{isAccollo ? `Accollo a ${targetPlayer.nickname}` : 'Prove per te'}</span><em>{selectedTotal>0?'+':''}{selectedTotal} pt potenziali</em></div><div className="assign-box"><label className="field-label">A chi vuoi accollare la prova?</label><select className="text-input" value={assignedToId} onChange={e=>{setAssignedToId(e.target.value); setSent(false);}}><option value={player.id}>Me stesso — {player.nickname}</option>{players.filter(p=>p.id!==player.id).map(p=><option key={p.id} value={p.id}>{p.nickname}</option>)}</select>{isAccollo && <p className="accollo-warning">🔥 Stai accollando questa prova a <b>{targetPlayer.nickname}</b>. I punti andranno a lui/lei dopo approvazione.</p>}</div><div className="event-grid multi quantity-mode">{events.map(e=>{const selected=selectedIds.includes(e.id); const quantity=getQuantity(e.id); const total=e.points*quantity; return <div key={e.id} className={`event-choice ${selected?'selected':''}`}><button type="button" onClick={()=>toggleEvent(e.id)}><span className="fake-check">{selected ? '✓' : ''}</span><span>{e.title}</span><b>{e.legendary && e.description ? e.description : `${e.points>0?'+':''}${e.points} pt`}</b></button>{selected && <div className="quantity-row"><label>Quantità</label><input className="quantity-input" type="number" min="1" max="999" inputMode="numeric" value={getQuantityInputValue(e.id)} onChange={ev=>setQuantity(e.id, ev.target.value)} onClick={ev=>ev.stopPropagation()} /><span className="quantity-total">Totale: {total>0?'+':''}{total} pt</span></div>}</div>;})}</div><textarea className="text-area" placeholder="Nota opzionale per la Redazione" value={note} onChange={e=>setNote(e.target.value)} /><button className="primary" disabled={busy || selectedIds.length===0} onClick={submit}><Send size={18}/> {busy ? 'INVIO...' : isAccollo ? 'INVIA ACCOLLO ALLA REDAZIONE' : selectedIds.length > 1 ? 'INVIA PROVE ALLA REDAZIONE' : 'INVIA PROVA ALLA REDAZIONE'}</button>{sent&&<p className="success">{isAccollo ? 'Accollo inviato' : 'Prove inviate'} su Supabase. In attesa di approvazione.</p>}</section>;
 }
 
 function Feed({ submissions, players, events, varReviews, player, refresh }: { submissions: Submission[]; players: Player[]; events: EventDef[]; varReviews: VarReview[]; player: Player; refresh: () => Promise<void> }) {
